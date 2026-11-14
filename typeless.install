@@ -1,0 +1,101 @@
+post_install() {
+  _typeless_register_ime
+  _typeless_post_common
+  _typeless_check_clipboard_persist
+}
+
+post_upgrade() {
+  post_install
+}
+
+pre_remove() {
+  rm -f /usr/share/ibus/component/typeless-voice-ime.xml
+  rm -f /usr/lib/fcitx5/addon/typeless-voice.conf \
+        /usr/share/fcitx5/addon/typeless-voice.conf \
+        /usr/share/fcitx5/inputmethod/typeless-voice.conf \
+        /usr/lib/fcitx5/typeless-voice.so
+  return 0
+}
+
+_typeless_post_common() {
+  # setuid sandbox helper: Chromium aborts if present with wrong ownership/mode
+  if [ -f /opt/Typeless/chrome-sandbox ]; then
+    chown root:root /opt/Typeless/chrome-sandbox
+    chmod 4755 /opt/Typeless/chrome-sandbox
+  fi
+
+  # uinput device for the keyboard helper
+  if ! getent group input >/dev/null 2>&1; then
+    groupadd --system input 2>/dev/null || true
+  fi
+  installing_user="${SUDO_USER:-}"
+  if [ -n "$installing_user" ] && [ "$installing_user" != root ] \
+      && id -u "$installing_user" >/dev/null 2>&1; then
+    usermod -aG input "$installing_user" 2>/dev/null || true
+  fi
+  modprobe uinput 2>/dev/null || true
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=misc --action=change >/dev/null 2>&1 || true
+    # apply the new uaccess ACLs to already-present input devices
+    udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1 || true
+  fi
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+  fi
+}
+
+_typeless_check_clipboard_persist() {
+  # Typeless pastes dictated text by writing the clipboard, injecting Ctrl+V and
+  # then restoring the previous contents. Before each paste it reads the current
+  # clipboard through `wl-paste`. If the selection has no live owner (the app
+  # that put the data there exited or is itself blocked), that read never
+  # returns: the paste child hangs, the main process blocks on its pipe, and the
+  # whole UI freezes. A persister owns the regular clipboard permanently and
+  # answers reads from its own copy, which breaks that deadlock.
+  #
+  # Check both "running now" and "configured for the session"; report an error
+  # rather than failing the transaction, so the install still completes.
+  if command -v pgrep >/dev/null 2>&1 && pgrep -x wl-clip-persist >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for dir in /etc/xdg/autostart /etc/systemd/user /usr/lib/systemd/user; do
+    if [ -d "$dir" ] && grep -rqs 'wl-clip-persist' "$dir" 2>/dev/null; then
+      return 0
+    fi
+  done
+  for dir in /home/*/.config/hypr /home/*/.config/systemd/user /root/.config/hypr; do
+    if [ -d "$dir" ] && grep -rqs 'wl-clip-persist' "$dir" 2>/dev/null; then
+      return 0
+    fi
+  done
+
+  printf '%s\n' \
+    'error: Typeless paste needs a persistent Wayland clipboard owner, and none is' \
+    'error: running or configured. Without one, the second dictation can hang the app' \
+    'error: (its paste backend blocks reading a clipboard offer that nobody serves).' \
+    '' \
+    'error: Install and start wl-clip-persist, or add this line to' \
+    'error: ~/.config/hypr/autostart.lua and log in again:' \
+    '' \
+    'error:   o.launch_on_start("wl-clip-persist --clipboard regular")' \
+    >&2
+  return 1
+}
+
+_typeless_register_ime() {
+  local engine=/opt/Typeless/resources/lib/input-helper/build/linux/x64/typeless-voice-ime
+  local script=/opt/Typeless/resources/lib/input-helper/build/linux/x64/register-voice-ime.sh
+  [ -x "$engine" ] || chmod +x "$engine" 2>/dev/null || true
+  [ -x "$script" ] || chmod +x "$script" 2>/dev/null || true
+  if [ -x "$script" ] && [ -e "$engine" ]; then
+    # Arch fcitx5 addon/libdir layout differs from Debian; the addon .so is not
+    # shipped in this build, so registration only writes the IBus component XML.
+    "$script" --system --engine-path "$engine" || true
+  fi
+}

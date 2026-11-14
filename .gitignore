@@ -1,0 +1,16 @@
+# Build artifacts
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar.gz
+*.so
+
+# Upstream Debian package: never committed (139 MB, above GitHub's file limit,
+# and freely downloadable -- the PKGBUILD fetches it by URL now)
+*.deb
+
+# Editor / tooling noise
+*.swp
+.idea/
+.vscode/
