@@ -15,6 +15,10 @@ everything below was found by measurement, not by reading their docs.
 | 4 | "Ask anything" panel (**Right Alt + Space**) still has a border | It is a *different* window: class `Typeless`, title `AI result` | second window rule, matched by title |
 | 5 | **Second dictation freezes the whole UI** (nothing clickable) | Paste backend deadlocks reading the clipboard it owns | run `wl-clip-persist` (now a package dependency) |
 
+Plus one mode that is not a bug in this packaging but is worth recognising: the
+app sometimes wedges mid-session and stops reacting to the hotkey with no error
+at all. See [silently wedged instance](#known-second-failure-mode-silently-wedged-instance).
+
 Install: `makepkg -si` in this directory, or
 
 ```sh
@@ -218,6 +222,55 @@ can freeze on the second dictation.
 **Recovery if it already froze.** `wl-copy --clear` unsticks the clipboard, but
 the app must be restarted — its main process is deadlocked, and it ignores
 `SIGTERM` (use `kill -9`).
+
+### Known second failure mode: silently wedged instance
+
+Separate from the deadlock above, and worth knowing because it looks identical
+from the outside — the hotkey does nothing at all, no recording, no error.
+
+What distinguishes it:
+
+```sh
+# the pill window still exists, but parked off the left edge of the screen
+hyprctl clients -j | jq -r '.[] | select(.class|test("Typeless")) | "\(.class) \(.title) at \(.at) mapped \(.mapped)"'
+# Typeless-floating-bar Status at [-2575,940] mapped true      <-- off-screen
+
+# and no new files appear here no matter how many times you press the hotkey
+ls -lt ~/.config/Typeless/Recordings/ | head -3
+
+# while the main process is healthy, not blocked:
+cat /proc/$(pgrep -f '^/opt/Typeless/typeless --ozone-platform=x11')/wchan
+# poll_schedule_timeout  (= alive, just not reacting)
+```
+
+A healthy instance keeps the bar at a visible position (`1345,940` on a
+3440x1440 screen) and drops a new `.ogg` in `Recordings/` on every dictation.
+The wedged one keeps the window mapped off-screen and never records again — it
+stopped mid-session and never recovered on its own.
+
+Do not bother with `wl-copy --clear` here; the clipboard is fine. Restart the
+app:
+
+```sh
+pkill -9 -f '^/opt/Typeless/typeless --ozone-platform=x11'
+typeless --ozone-platform=x11 &
+```
+
+`SIGTERM` is not enough on this app either: it is ignored while the app is in
+this state, and the process only dies on `SIGKILL`. Confirm it is really gone
+before relaunching, and check that exactly one helper exists afterwards:
+
+```sh
+pgrep -f '^/opt/Typeless/typeless --ozone-platform=x11'        # empty
+ps -eo pid,args | grep '[k]eyboard-helper-child-process'        # exactly one
+```
+
+Two instances *can* run at once (no singleton lock enforcement was observed
+here), and only one process can hold `EVIOCGRAB` on a given keyboard — the grab
+is exclusive, a second helper fails with `EBUSY`. So with two instances alive the
+second one starts, shows its window, and its hotkey silently does nothing while
+the first one keeps the keyboards. If the hotkey died right after you fiddled
+with the app, count the helpers first.
 
 ---
 
